@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# CodeSight
+.codesight/
+
+# Node.js (Appium)
+node_modules/
+
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+
+# Captures (generated output)
+server/captures/
+
+# Recordings
+*.mp4
+
+# Android / Gradle (android-nav-automator has its own .gitignore)
+local.properties

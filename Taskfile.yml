@@ -1,0 +1,126 @@
+version: "3"
+
+vars:
+  APPIUM_PORT: 4723
+  EMULATOR_SERIAL: emulator-5554
+
+tasks:
+  install-scrcpy:
+    desc: Install scrcpy for Android screen mirroring
+    cmds:
+      - brew install scrcpy
+    status:
+      - command -v scrcpy
+
+  start-appium:
+    desc: Start the Appium server (foreground)
+    cmds:
+      - appium --port {{.APPIUM_PORT}}
+
+  start-scrcpy:
+    desc: Boot emulator if needed, then mirror with scrcpy
+    cmds:
+      - |
+        # Check if an emulator is already running
+        if ! adb devices | grep -q "^emulator-"; then
+          echo "No running emulator found. Starting one..."
+          AVD=$(emulator -list-avds | head -1)
+          if [ -z "$AVD" ]; then
+            echo "ERROR: No AVDs available. Create one in Android Studio first."
+            exit 1
+          fi
+          echo "Booting AVD: $AVD"
+          emulator -avd "$AVD" -no-snapshot-load &
+          # Wait for the device to come online
+          adb wait-for-device
+          echo "Waiting for boot to complete..."
+          while [ "$(adb -s {{.EMULATOR_SERIAL}} shell getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
+            sleep 1
+          done
+          echo "Emulator ready."
+        else
+          echo "Emulator already running."
+        fi
+        scrcpy -s {{.EMULATOR_SERIAL}} --max-size 1024
+
+  # Event-driven capture (FastAPI + logcat)
+  start-server:
+    desc: Start the FastAPI capture server (logcat event-driven)
+    dir: server
+    cmds:
+      - uv run main.py {{.CLI_ARGS}}
+
+  capture:
+    desc: Run scrcpy + event-driven capture server (start Appium separately first)
+    deps:
+      - start-scrcpy
+      - start-server
+
+  capture-logcat:
+    desc: Full end-to-end logcat capture (emulator + Appium + scrcpy + capture server)
+    cmds:
+      - |
+        # ── 1. Ensure emulator is running ──
+        if ! adb devices | grep -q "^emulator-"; then
+          echo "No running emulator found. Starting one..."
+          AVD=$(emulator -list-avds | head -1)
+          if [ -z "$AVD" ]; then
+            echo "ERROR: No AVDs available. Create one in Android Studio first."
+            exit 1
+          fi
+          echo "Booting AVD: $AVD"
+          emulator -avd "$AVD" -no-snapshot-load &
+          adb wait-for-device
+          echo "Waiting for boot to complete..."
+          while [ "$(adb -s {{.EMULATOR_SERIAL}} shell getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
+            sleep 1
+          done
+          echo "Emulator ready."
+        else
+          echo "Emulator already running."
+        fi
+
+        # ── 2. Start Appium server ──
+        if ! curl -s http://127.0.0.1:{{.APPIUM_PORT}}/status | grep -q '"ready":true'; then
+          echo "Starting Appium server..."
+          appium --port {{.APPIUM_PORT}} &
+          APPIUM_PID=$!
+          # Wait for Appium to be ready
+          until curl -s http://127.0.0.1:{{.APPIUM_PORT}}/status | grep -q '"ready":true'; do
+            sleep 1
+          done
+          echo "Appium ready (pid $APPIUM_PID)."
+        else
+          echo "Appium already running."
+        fi
+
+        # ── 3. Start scrcpy in background ──
+        echo "Starting scrcpy..."
+        scrcpy -s {{.EMULATOR_SERIAL}} --max-size 1024 &
+
+        # ── 4. Start FastAPI capture server (foreground) ──
+        echo "Starting capture server..."
+        cd server && uv run main.py --serial {{.EMULATOR_SERIAL}} {{.CLI_ARGS}}
+
+  # Polling capture (standalone, no FastAPI)
+  start-poll:
+    desc: Start the polling-based capture script
+    dir: server
+    cmds:
+      - uv run poll.py {{.CLI_ARGS}}
+
+  capture-poll:
+    desc: Run scrcpy + polling capture (start Appium separately first)
+    deps:
+      - start-scrcpy
+      - start-poll
+
+  stop:
+    desc: Tear down all processes started by capture and start-appium
+    cmds:
+      - pkill -f "uv run main.py" || true
+      - pkill -f "uv run poll.py" || true
+      - pkill -f "adb.*logcat" || true
+      - pkill -f "scrcpy -s" || true
+      - pkill -f "appium --port" || true
+      - echo "All processes stopped."

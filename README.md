@@ -1,5 +1,97 @@
 # Android Agent - Appium Inspector Setup
 
+## Android Emulator TLS-Inspection Lab
+
+This repo includes a reproducible lab for validating Android API 36 emulator
+trust-store changes against a local TLS-inspection proxy. It runs locally on
+Linux with KVM, on Google Cloud Compute Engine with nested virtualization, and
+on DigitalOcean Droplets that expose `/dev/kvm`.
+
+### Provider setup
+
+**Local Linux VM or bare metal:**
+
+```bash
+./scripts/bootstrap-android-mitm-lab.sh
+```
+
+The bootstrap script installs Linux packages, Android command-line tools, the
+API 36 `google_apis;x86_64` image, and `mitmproxy`. It writes
+`~/.android-mitm-lab.env` with the Android SDK paths used by the lab.
+
+**Google Cloud:**
+
+```bash
+./scripts/gcp-create-android-mitm-lab.sh
+gcloud compute ssh android-mitm-lab --zone=us-central1-a
+git clone <this-repo-url>
+cd <repo>
+./scripts/bootstrap-android-mitm-lab.sh
+```
+
+The GCP helper creates an `n2-standard-2` Spot VM with nested virtualization
+enabled. Override `MACHINE_TYPE=n2-standard-4` for a roomier emulator host.
+
+**DigitalOcean:**
+
+```bash
+./scripts/digitalocean-create-android-mitm-lab.sh
+ssh root@<droplet-ip>
+git clone <this-repo-url>
+cd <repo>
+./scripts/bootstrap-android-mitm-lab.sh --validate-only
+./scripts/bootstrap-android-mitm-lab.sh
+```
+
+Destroy the Droplet if validation reports missing `/dev/kvm`; the Android
+emulator needs KVM acceleration for this lab.
+
+### End-to-end lab flow
+
+In the lab VM:
+
+```bash
+source ~/.android-mitm-lab.env
+./scripts/run-mitm-lab.sh start-emulator
+./scripts/run-mitm-lab.sh start-proxy
+./scripts/run-mitm-lab.sh set-proxy
+./scripts/run-mitm-lab.sh open-site https://example.com
+```
+
+Before installing the CA, Chrome should show a certificate/privacy error. Then
+install the mitmproxy CA into Android's legacy and Conscrypt APEX stores:
+
+```bash
+python3 mac_to_android_corp_cas.py \
+  --skip-keychain \
+  --extra-ca-pem ~/.mitmproxy/mitmproxy-ca-cert.pem \
+  --host example.com \
+  --proxy 127.0.0.1:8080
+adb shell am force-stop com.android.chrome
+./scripts/run-mitm-lab.sh open-site https://example.com
+```
+
+Chrome should now load the HTTPS page through mitmproxy. Re-run the installer
+after emulator reboot because the Android 14+ Conscrypt APEX bind mount is
+temporary.
+
+On macOS, omit `--skip-keychain` to probe target hosts and select matching
+corporate Keychain CAs. Cloud runs should pass explicit PEM files with
+`--extra-ca-pem`.
+
+Useful Taskfile shortcuts:
+
+```bash
+task validate-kvm
+task start-mitm-emulator
+task start-mitmproxy
+task configure-android-proxy
+task run-mitm-lab -- open-site https://example.com
+task install-mitm-ca
+task clear-android-proxy
+task stop
+```
+
 ## Quick Start
 
 ```bash

@@ -3,8 +3,67 @@ version: "3"
 vars:
   APPIUM_PORT: 4723
   EMULATOR_SERIAL: emulator-5554
+  MITM_PORT: 8080
+  AVD_NAME: api36-mitm
 
 tasks:
+  bootstrap-mitm-lab:
+    desc: Install Android API 36 emulator and mitmproxy lab dependencies
+    cmds:
+      - ./scripts/bootstrap-android-mitm-lab.sh
+
+  validate-kvm:
+    desc: Validate whether this host exposes nested KVM
+    cmds:
+      - ./scripts/bootstrap-android-mitm-lab.sh --validate-only
+
+  gcp-create-mitm-lab:
+    desc: Create a GCP Compute Engine VM with nested virtualization enabled
+    cmds:
+      - ./scripts/gcp-create-android-mitm-lab.sh
+
+  do-create-mitm-lab:
+    desc: Create a DigitalOcean Droplet candidate for KVM validation
+    cmds:
+      - ./scripts/digitalocean-create-android-mitm-lab.sh
+
+  install-mitm-ca:
+    desc: Install mitmproxy CA into the rooted emulator trust stores
+    cmds:
+      - |
+        python3 mac_to_android_corp_cas.py \
+          --skip-keychain \
+          --extra-ca-pem "${MITMPROXY_CA:-$HOME/.mitmproxy/mitmproxy-ca-cert.pem}" \
+          --host "${MITM_TEST_HOST:-example.com}" \
+          --proxy "${MITM_OPENSSL_PROXY:-127.0.0.1:{{.MITM_PORT}}}" \
+          --serial "{{.EMULATOR_SERIAL}}" \
+          {{.CLI_ARGS}}
+
+  run-mitm-lab:
+    desc: Print and optionally execute the mitmproxy CA-install lab flow
+    cmds:
+      - ./scripts/run-mitm-lab.sh {{.CLI_ARGS}}
+
+  start-mitm-emulator:
+    desc: Start the Android API 36 lab emulator in the background
+    cmds:
+      - ./scripts/run-mitm-lab.sh start-emulator
+
+  start-mitmproxy:
+    desc: Start mitmweb bound to localhost for emulator proxying
+    cmds:
+      - ./scripts/run-mitm-lab.sh start-proxy
+
+  configure-android-proxy:
+    desc: Route Android emulator traffic through local mitmproxy
+    cmds:
+      - ./scripts/run-mitm-lab.sh set-proxy
+
+  clear-android-proxy:
+    desc: Remove the Android global proxy
+    cmds:
+      - ./scripts/run-mitm-lab.sh clear-proxy
+
   install-scrcpy:
     desc: Install scrcpy for Android screen mirroring
     cmds:
@@ -116,11 +175,7 @@ tasks:
       - start-poll
 
   stop:
-    desc: Tear down all processes started by capture and start-appium
+    desc: Tear down lab services started by run-mitm-lab.sh
     cmds:
-      - pkill -f "uv run main.py" || true
-      - pkill -f "uv run poll.py" || true
-      - pkill -f "adb.*logcat" || true
-      - pkill -f "scrcpy -s" || true
-      - pkill -f "appium --port" || true
-      - echo "All processes stopped."
+      - ./scripts/run-mitm-lab.sh stop-proxy
+      - ./scripts/run-mitm-lab.sh stop-emulator
